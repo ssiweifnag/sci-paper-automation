@@ -1,0 +1,810 @@
+/**
+ * ResearchRadar - 學術文章與新聞爬取工具 (MiniMax 版本)
+ * 使用 MiniMax API 來生成摘要與報告
+ */
+
+import { useState, useEffect, useCallback } from "react";
+
+// ============ MiniMax API 配置 ===============
+const MINIMAX_API_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2";
+const MINIMAX_MODEL = "MiniMax-M2.5";
+
+// 請替換為你的 API Key
+const DEFAULT_API_KEY = "";
+
+// ============ 預設設定 ===============
+const DEFAULT_SETTINGS = {
+  keywords: ["green building", "indoor environmental quality", "sustainable architecture"],
+  sources: {
+    arxiv: true,
+    pubmed: true,
+    semanticScholar: false,
+    hackernews: true,
+  },
+  language: "zh-TW",
+  maxResults: 10,
+  reportStyle: "detailed",
+  apiKey: DEFAULT_API_KEY,
+};
+
+// ============ API 函數 ===============
+
+// arXiv RSS API
+const ARXIV_RSS = (query) =>
+  `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&max_results=5&sortBy=submittedDate&sortOrder=descending`;
+
+// HackerNews API
+const HN_API = "https://hn.algolia.com/api/v1/search?tags=story&hitsPerPage=5&query=";
+
+// Semantic Scholar API
+const SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1/paper/search";
+
+// PubMed API
+const PUBMED_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi";
+
+async function fetchArxiv(keyword) {
+  try {
+    const res = await fetch(ARXIV_RSS(keyword));
+    const text = await res.text();
+    const parser = new DOMParser();
+    const xml = parser.parseFromString(text, "application/xml");
+    const entries = xml.querySelectorAll("entry");
+    return Array.from(entries).map((e) => ({
+      title: e.querySelector("title")?.textContent?.trim() || "",
+      summary: e.querySelector("summary")?.textContent?.trim()?.slice(0, 300) || "",
+      url: e.querySelector("id")?.textContent?.trim() || "",
+      source: "arXiv",
+      date: e.querySelector("published")?.textContent?.slice(0, 10) || "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchHN(keyword) {
+  try {
+    const res = await fetch(HN_API + encodeURIComponent(keyword));
+    const data = await res.json();
+    return (data.hits || []).slice(0, 5).map((h) => ({
+      title: h.title || "",
+      summary: `Points: ${h.points} | Comments: ${h.num_comments}`,
+      url: h.url || `https://news.ycombinator.com/item?id=${h.objectID}`,
+      source: "HackerNews",
+      date: h.created_at?.slice(0, 10) || "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchSemanticScholar(keyword, maxResults = 10) {
+  try {
+    const url = `${SEMANTIC_SCHOLAR_API}?query=${encodeURIComponent(keyword)}&limit=${maxResults}&fields=title,abstract,year,authors,citationCount,url`;
+    const res = await fetch(url);
+    const data = await res.json();
+    return (data.data || []).map((item) => ({
+      title: item.title || "",
+      summary: item.abstract?.slice(0, 300) || "",
+      url: item.url || "",
+      source: "Semantic Scholar",
+      date: item.year ? `${item.year}-01-01` : "",
+      citations: item.citationCount || 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchPubMed(keyword, maxResults = 10) {
+  try {
+    // Search
+    const searchUrl = `${PUBMED_API}?db=pubmed&term=${encodeURIComponent(keyword)}&retmax=${maxResults}&retmode=json&sort=relevance`;
+    const searchRes = await fetch(searchUrl);
+    const searchData = await searchRes.json();
+    const idlist = searchData.esearchresult?.IdList || [];
+    
+    if (idlist.length === 0) return [];
+    
+    // Fetch details
+    const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${idlist.join(",")}&retmode=json`;
+    const fetchRes = await fetch(fetchUrl);
+    const fetchData = await fetchRes.json();
+    
+    const results = [];
+    for (const [uid, info] of Object.entries(fetchData.result)) {
+      if (uid === "uids") continue;
+      results.push({
+        title: info.title || "",
+        summary: "",
+        url: `https://pubmed.ncbi.nlm.nih.gov/${uid}/`,
+        source: "PubMed",
+        date: info.pubdate?.slice(0, 10) || "",
+      });
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+// MiniMax API 調用
+async function callMiniMax(apiKey, systemPrompt, userPrompt, maxTokens = 1000) {
+  const response = await fetch(MINIMAX_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: MINIMAX_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: maxTokens,
+    }),
+  });
+  
+  const data = await response.json();
+  if (data.choices && data.choices[0] && data.choices[0].message) {
+    return data.choices[0].message.content;
+  }
+  throw new Error(data.message || "API Error");
+}
+
+async function generateReport(articles, settings, apiKey) {
+  const articleList = articles
+    .slice(0, 15)
+    .map((a, i) => `${i + 1}. [${a.source}] ${a.title}\n摘要: ${a.summary}\n連結: ${a.url}`)
+    .join("\n\n");
+
+  const langNote = settings.language === "zh-TW" 
+    ? "請用繁體中文回應，維持學術語氣。" 
+    : "Please respond in English.";
+
+  const systemPrompt = `你是一位專業學術研究助理，擅長文獻綜述與趨勢分析。${langNote}`;
+  
+  const userPrompt = `以下是今天爬取到的學術文章與新聞（關鍵字：${settings.keywords.join("、")}）：
+
+${articleList}
+
+請生成一份結構化的每日摘要報告，包含：
+1. **今日要點**（3-5個重點發現）
+2. **重要文章摘要**（每篇100字以內）
+3. **趨勢分析**（基於今日內容的洞察）
+4. **推薦閱讀**（最值得深入閱讀的2-3篇）
+
+請確保報告簡潔、有見解，適合研究者快速掌握領域動態。`;
+
+  return callMiniMax(apiKey, systemPrompt, userPrompt, 1500);
+}
+
+async function analyzeArticle(article, settings, apiKey) {
+  const langNote = settings.language === "zh-TW" 
+    ? "請用繁體中文回應。" 
+    : "Please respond in English.";
+
+  const systemPrompt = `你是一位學術論文分析專家。${langNote}`;
+  
+  const userPrompt = `請分析以下學術論文，提供：
+1. 研究動機與目標
+2. 方法論簡述
+3. 主要發現
+4. 研究貢獻與價值
+5. 適合投稿的期刊類型
+
+論文資訊：
+標題：${article.title}
+摘要：${article.summary}
+來源：${article.source}
+連結：${article.url}`;
+
+  return callMiniMax(apiKey, systemPrompt, userPrompt, 800);
+}
+
+// ============ UI Components ===============
+
+function Badge({ label, color = "#4f8ef7" }) {
+  return (
+    <span style={{
+      background: color + "22",
+      color,
+      border: `1px solid ${color}44`,
+      borderRadius: 4,
+      fontSize: 11,
+      padding: "1px 7px",
+      fontWeight: 600,
+      letterSpacing: "0.03em",
+      whiteSpace: "nowrap",
+    }}>
+      {label}
+    </span>
+  );
+}
+
+function ArticleCard({ article, onAnalyze }) {
+  const colors = { 
+    arXiv: "#e85d4a", 
+    "HackerNews": "#ff6600", 
+    "PubMed": "#2e8b57",
+    "Semantic Scholar": "#4285f4",
+    "Default": "#4f8ef7" 
+  };
+  const c = colors[article.source] || colors.Default;
+  
+  return (
+    <div style={{
+      background: "#16181e",
+      border: "1px solid #2a2d38",
+      borderRadius: 10,
+      padding: "14px 16px",
+      marginBottom: 10,
+      transition: "border-color 0.2s",
+    }}
+    onMouseEnter={e => e.currentTarget.style.borderColor = "#4f8ef7"}
+    onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2d38"}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <a href={article.url} target="_blank" rel="noreferrer"
+          style={{ color: "#e0e4f0", fontWeight: 600, fontSize: 14, textDecoration: "none", flex: 1 }}
+          onMouseEnter={e => e.target.style.color = "#4f8ef7"}
+          onMouseLeave={e => e.target.style.color = "#e0e4f0"}>
+          {article.title}
+        </a>
+        <Badge label={article.source} color={c} />
+      </div>
+      <p style={{ color: "#7a8099", fontSize: 12, marginTop: 6, lineHeight: 1.5 }}>
+        {article.summary}
+      </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+        <div style={{ color: "#4a5068", fontSize: 11 }}>{article.date}</div>
+        {onAnalyze && (
+          <button onClick={() => onAnalyze(article)} style={{
+            background: "#4f8ef722",
+            color: "#4f8ef7",
+            border: "1px solid #4f8ef744",
+            borderRadius: 6,
+            padding: "4px 12px",
+            fontSize: 11,
+            cursor: "pointer",
+          }}>
+            AI 分析
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ReportView({ report }) {
+  if (!report) return null;
+  const lines = report.content.split("\n");
+  return (
+    <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ color: "#e0e4f0", fontWeight: 700, fontSize: 15 }}>
+            📊 {report.date} 日報
+          </div>
+          <div style={{ color: "#4a5068", fontSize: 12, marginTop: 2 }}>
+            來源: {report.sources?.join("、")} | {report.articleCount} 篇文章
+          </div>
+        </div>
+      </div>
+      <div style={{ color: "#b0b8d0", fontSize: 13.5, lineHeight: 1.85, whiteSpace: "pre-wrap" }}>
+        {lines.map((line, i) => {
+          if (line.startsWith("**") && line.endsWith("**"))
+            return <div key={i} style={{ color: "#4f8ef7", fontWeight: 700, marginTop: 14, marginBottom: 4 }}>
+              {line.replace(/\*\*/g, "")}
+            </div>;
+          if (/^\d+\./.test(line))
+            return <div key={i} style={{ paddingLeft: 8, borderLeft: "2px solid #2a2d38", marginBottom: 4 }}>
+              {line}
+            </div>;
+          return <div key={i}>{line}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============ Main App ===============
+
+export default function ResearchRadar() {
+  const [tab, setTab] = useState("dashboard");
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [articles, setArticles] = useState([]);
+  const [reports, setReports] = useState([]);
+  const [currentReport, setCurrentReport] = useState(null);
+  const [analyzedArticle, setAnalyzedArticle] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const [newKeyword, setNewKeyword] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+
+  // Load from localStorage
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem("rr_settings");
+      if (savedSettings) setSettings(JSON.parse(savedSettings));
+      
+      const savedReports = localStorage.getItem("rr_reports");
+      if (savedReports) setReports(JSON.parse(savedReports));
+    } catch (e) {
+      console.error("Load error:", e);
+    }
+  }, []);
+
+  const saveSettings = async (newSettings) => {
+    setSettings(newSettings);
+    localStorage.setItem("rr_settings", JSON.stringify(newSettings));
+  };
+
+  const runDaily = useCallback(async () => {
+    if (!settings.apiKey) {
+      setStatus("請先輸入 API Key！");
+      return;
+    }
+
+    setLoading(true);
+    setStatus("🔍 爬取文章中...");
+    const allArticles = [];
+
+    for (const kw of settings.keywords) {
+      if (settings.sources.arxiv) {
+        setStatus(`📚 arXiv: ${kw}`);
+        const res = await fetchArxiv(kw);
+        allArticles.push(...res);
+      }
+      if (settings.sources.hackernews) {
+        setStatus(`📰 HackerNews: ${kw}`);
+        const res = await fetchHN(kw);
+        allArticles.push(...res);
+      }
+      if (settings.sources.semanticScholar) {
+        setStatus(`🎓 Semantic Scholar: ${kw}`);
+        const res = await fetchSemanticScholar(kw, settings.maxResults);
+        allArticles.push(...res);
+      }
+      if (settings.sources.pubmed) {
+        setStatus(`🏥 PubMed: ${kw}`);
+        const res = await fetchPubMed(kw, settings.maxResults);
+        allArticles.push(...res);
+      }
+    }
+
+    // Deduplicate by URL
+    const seen = new Set();
+    const unique = allArticles.filter(a => {
+      if (seen.has(a.url)) return false;
+      seen.add(a.url);
+      return true;
+    });
+    setArticles(unique);
+
+    setStatus("🤖 AI 生成報告中...");
+    try {
+      const reportText = await generateReport(unique, settings, settings.apiKey);
+      const today = new Date().toISOString().slice(0, 10);
+      const newReport = {
+        id: Date.now(),
+        date: today,
+        content: reportText,
+        articleCount: unique.length,
+        sources: Object.entries(settings.sources).filter(([, v]) => v).map(([k]) => k),
+        keywords: [...settings.keywords],
+      };
+
+      const updatedReports = [newReport, ...reports].slice(0, 30);
+      setReports(updatedReports);
+      setCurrentReport(newReport);
+      localStorage.setItem("rr_reports", JSON.stringify(updatedReports));
+      setStatus("✅ 完成！");
+    } catch (e) {
+      setStatus(`❌ 錯誤: ${e.message}`);
+    }
+    
+    setLoading(false);
+    setTab("report");
+  }, [settings, reports]);
+
+  const handleAnalyze = async (article) => {
+    if (!settings.apiKey) {
+      alert("請先輸入 API Key！");
+      return;
+    }
+    
+    setLoading(true);
+    setStatus("🤖 AI 分析中...");
+    try {
+      const analysis = await analyzeArticle(article, settings, settings.apiKey);
+      setAnalyzedArticle({ ...article, analysis });
+    } catch (e) {
+      alert(`分析失敗: ${e.message}`);
+    }
+    setLoading(false);
+  };
+
+  const filteredReports = reports.filter(r =>
+    r.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    r.date.includes(searchQuery) ||
+    r.keywords?.some(k => k.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
+  const tabs = [
+    { id: "dashboard", label: "📋 儀表板" },
+    { id: "articles", label: "📄 文章" },
+    { id: "report", label: "📊 報告" },
+    { id: "kb", label: "🗃 知識庫" },
+    { id: "settings", label: "⚙️ 設定" },
+  ];
+
+  const inputStyle = {
+    background: "#0e1018",
+    border: "1px solid #2a2d38",
+    borderRadius: 8,
+    color: "#e0e4f0",
+    padding: "8px 12px",
+    fontSize: 13,
+    outline: "none",
+    width: "100%",
+    boxSizing: "border-box",
+  };
+
+  const btnStyle = (color = "#4f8ef7", size = "normal") => ({
+    background: color,
+    color: "#fff",
+    border: "none",
+    borderRadius: 8,
+    padding: size === "sm" ? "5px 12px" : "9px 20px",
+    fontSize: size === "sm" ? 12 : 13,
+    fontWeight: 600,
+    cursor: "pointer",
+    transition: "opacity 0.15s",
+  });
+
+  return (
+    <div style={{
+      background: "#0b0d13",
+      minHeight: "100vh",
+      fontFamily: "'IBM Plex Sans', 'Noto Sans TC', sans-serif",
+      color: "#e0e4f0",
+    }}>
+      {/* Header */}
+      <div style={{
+        background: "linear-gradient(135deg, #0f1120 0%, #131825 100%)",
+        borderBottom: "1px solid #1e2130",
+        padding: "16px 24px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+      }}>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
+            🛰 ResearchRadar
+          </div>
+          <div style={{ fontSize: 11, color: "#4a5068", marginTop: 1 }}>
+            學術文章 · 新聞爬取 · AI 摘要 (MiniMax)
+          </div>
+        </div>
+        <button onClick={runDaily} disabled={loading} style={{
+          ...btnStyle("#4f8ef7"),
+          background: loading ? "#1e2130" : "linear-gradient(135deg, #4f8ef7, #7c6ef7)",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}>
+          {loading ? `⏳ ${status}` : "▶ 執行今日爬取 + 報告"}
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 2, padding: "12px 24px 0", borderBottom: "1px solid #1e2130" }}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            background: tab === t.id ? "#16181e" : "transparent",
+            color: tab === t.id ? "#4f8ef7" : "#7a8099",
+            border: "none",
+            borderBottom: tab === t.id ? "2px solid #4f8ef7" : "2px solid transparent",
+            padding: "8px 16px",
+            fontSize: 13,
+            cursor: "pointer",
+            fontWeight: tab === t.id ? 700 : 400,
+            transition: "all 0.15s",
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{ padding: 24, maxWidth: 900, margin: "0 auto" }}>
+
+        {/* DASHBOARD */}
+        {tab === "dashboard" && (
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 24 }}>
+              {[
+                { label: "知識庫報告", value: reports.length, icon: "🗃", color: "#4f8ef7" },
+                { label: "已爬取文章", value: articles.length, icon: "📄", color: "#7c6ef7" },
+                { label: "追蹤關鍵字", value: settings.keywords.length, icon: "🔑", color: "#e85d4a" },
+              ].map(s => (
+                <div key={s.label} style={{
+                  background: "#13151c",
+                  border: "1px solid #2a2d38",
+                  borderRadius: 12,
+                  padding: "18px 20px",
+                }}>
+                  <div style={{ fontSize: 24 }}>{s.icon}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color, marginTop: 4 }}>
+                    {s.value}
+                  </div>
+                  <div style={{ color: "#4a5068", fontSize: 12, marginTop: 2 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+              <div style={{ color: "#7a8099", fontSize: 13, marginBottom: 10, fontWeight: 600 }}>
+                🔑 追蹤關鍵字
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {settings.keywords.map(k => <Badge key={k} label={k} color="#4f8ef7" />)}
+              </div>
+            </div>
+
+            {reports[0] && (
+              <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+                <div style={{ color: "#7a8099", fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+                  📋 最新報告預覽
+                </div>
+                <div style={{ color: "#b0b8d0", fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+                  {reports[0].content.slice(0, 500)}...
+                </div>
+                <button onClick={() => { setCurrentReport(reports[0]); setTab("report"); }}
+                  style={{ ...btnStyle("#4f8ef7", "sm"), marginTop: 12 }}>
+                  查看完整報告 →
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ARTICLES */}
+        {tab === "articles" && (
+          <div>
+            <div style={{ color: "#7a8099", fontSize: 13, marginBottom: 16 }}>
+              共 {articles.length} 篇文章 | 點擊「執行今日爬取」以更新
+            </div>
+            {articles.length === 0 ? (
+              <div style={{ textAlign: "center", color: "#4a5068", padding: "60px 0" }}>
+                尚無文章，請點擊上方「執行今日爬取 + 報告」
+              </div>
+            ) : articles.map((a, i) => (
+              <ArticleCard key={i} article={a} onAnalyze={handleAnalyze} />
+            ))}
+          </div>
+        )}
+
+        {/* REPORT */}
+        {tab === "report" && (
+          <div>
+            {analyzedArticle && (
+              <div style={{ background: "#1a1d28", border: "1px solid #4f8ef7", borderRadius: 12, padding: 20, marginBottom: 20 }}>
+                <div style={{ color: "#4f8ef7", fontWeight: 700, marginBottom: 10 }}>
+                  🤖 {analyzedArticle.title}
+                </div>
+                <div style={{ color: "#b0b8d0", fontSize: 13, lineHeight: 1.8, whiteSpace: "pre-wrap" }}>
+                  {analyzedArticle.analysis}
+                </div>
+                <button onClick={() => setAnalyzedArticle(null)} style={{
+                  ...btnStyle("#4a5068", "sm"), marginTop: 12
+                }}>
+                  關閉分析
+                </button>
+              </div>
+            )}
+            {currentReport ? (
+              <ReportView report={currentReport} />
+            ) : reports[0] ? (
+              <ReportView report={reports[0]} />
+            ) : (
+              <div style={{ textAlign: "center", color: "#4a5068", padding: "60px 0" }}>
+                尚無報告，請點擊「執行今日爬取 + 報告」
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* KNOWLEDGE BASE */}
+        {tab === "kb" && (
+          <div>
+            <div style={{ marginBottom: 16 }}>
+              <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="🔍 搜尋報告內容、日期、關鍵字..."
+                style={inputStyle} />
+            </div>
+            {filteredReports.length === 0 ? (
+              <div style={{ textAlign: "center", color: "#4a5068", padding: "60px 0" }}>
+                知識庫尚無報告
+              </div>
+            ) : filteredReports.map(r => (
+              <div key={r.id} style={{
+                background: "#13151c",
+                border: "1px solid #2a2d38",
+                borderRadius: 10,
+                padding: "14px 16px",
+                marginBottom: 10,
+                cursor: "pointer",
+                transition: "border-color 0.15s",
+              }}
+              onClick={() => { setCurrentReport(r); setTab("report"); }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = "#4f8ef7"}
+              onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2d38"}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontWeight: 700, color: "#e0e4f0", fontSize: 14 }}>
+                    📊 {r.date} 日報
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Badge label={`${r.articleCount} 篇`} color="#7c6ef7" />
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                  {r.keywords?.map(k => <Badge key={k} label={k} color="#4a5068" />)}
+                </div>
+                <div style={{ color: "#4a5068", fontSize: 12, marginTop: 8 }}>
+                  {r.content.slice(0, 120)}...
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* SETTINGS */}
+        {tab === "settings" && (
+          <div style={{ display: "grid", gap: 20 }}>
+            {/* API Key */}
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+              <div style={{ color: "#e0e4f0", fontWeight: 700, marginBottom: 14 }}>
+                🔐 MiniMax API Key
+              </div>
+              <input 
+                type="password" 
+                value={apiKeyInput || settings.apiKey} 
+                onChange={e => setApiKeyInput(e.target.value)}
+                placeholder="sk-cp-..."
+                style={inputStyle} 
+              />
+              <button 
+                onClick={() => saveSettings({ ...settings, apiKey: apiKeyInput || settings.apiKey })} 
+                style={{ ...btnStyle("#4f8ef7", "sm"), marginTop: 12 }}
+              >
+                儲存 API Key
+              </button>
+              <div style={{ color: "#4a5068", fontSize: 11, marginTop: 8 }}>
+                請輸入 MiniMax API Key，格式如：sk-cp-xxx
+              </div>
+            </div>
+
+            {/* Keywords */}
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+              <div style={{ color: "#e0e4f0", fontWeight: 700, marginBottom: 14 }}>
+                🔑 追蹤關鍵字
+              </div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input value={newKeyword} onChange={e => setNewKeyword(e.target.value)}
+                  placeholder="新增關鍵字..." style={{ ...inputStyle, width: "auto", flex: 1 }}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && newKeyword.trim()) {
+                      saveSettings({ ...settings, keywords: [...settings.keywords, newKeyword.trim()] });
+                      setNewKeyword("");
+                    }
+                  }} />
+                <button onClick={() => {
+                  if (newKeyword.trim()) {
+                    saveSettings({ ...settings, keywords: [...settings.keywords, newKeyword.trim()] });
+                    setNewKeyword("");
+                  }
+                }} style={btnStyle("#4f8ef7", "sm")}>新增</button>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {settings.keywords.map(k => (
+                  <div key={k} style={{
+                    background: "#4f8ef722",
+                    border: "1px solid #4f8ef744",
+                    borderRadius: 6,
+                    padding: "4px 10px",
+                    fontSize: 13,
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                  }}>
+                    <span style={{ color: "#4f8ef7" }}>{k}</span>
+                    <span style={{ cursor: "pointer", color: "#e85d4a", fontWeight: 700 }}
+                      onClick={() => saveSettings({ ...settings, keywords: settings.keywords.filter(x => x !== k) })}>
+                      ×
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Sources */}
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+              <div style={{ color: "#e0e4f0", fontWeight: 700, marginBottom: 14 }}>
+                📡 爬取來源
+              </div>
+              {[
+                { key: "arxiv", label: "arXiv（學術論文）", desc: "物理、數學、CS、工程等預印本", color: "#e85d4a" },
+                { key: "hackernews", label: "HackerNews（科技新聞）", desc: "矽谷技術社群熱門討論", color: "#ff6600" },
+                { key: "semanticScholar", label: "Semantic Scholar（學術搜尋）", desc: "AI 驅動的學術論文搜尋引擎", color: "#4285f4" },
+                { key: "pubmed", label: "PubMed（生醫論文）", desc: "醫學與生命科學文獻資料庫", color: "#2e8b57" },
+              ].map(s => (
+                <div key={s.key} style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "10px 0",
+                  borderBottom: "1px solid #1e2130",
+                }}>
+                  <div>
+                    <div style={{ color: "#e0e4f0", fontSize: 13, fontWeight: 600 }}>{s.label}</div>
+                    <div style={{ color: "#4a5068", fontSize: 11, marginTop: 2 }}>{s.desc}</div>
+                  </div>
+                  <div onClick={() => saveSettings({
+                    ...settings, sources: { ...settings.sources, [s.key]: !settings.sources[s.key] }
+                  })} style={{
+                    width: 40,
+                    height: 22,
+                    borderRadius: 11,
+                    cursor: "pointer",
+                    background: settings.sources[s.key] ? s.color : "#2a2d38",
+                    position: "relative",
+                    transition: "background 0.2s",
+                  }}>
+                    <div style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: 8,
+                      background: "#fff",
+                      position: "absolute",
+                      top: 3,
+                      left: settings.sources[s.key] ? 21 : 3,
+                      transition: "left 0.2s",
+                    }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Language */}
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20 }}>
+              <div style={{ color: "#e0e0f0", fontWeight: 700, marginBottom: 14 }}>
+                🌍 報告語言
+              </div>
+              <div style={{ display: "flex", gap: 12 }}>
+                {[
+                  { key: "zh-TW", label: "繁體中文" },
+                  { key: "en", label: "English" },
+                ].map(lang => (
+                  <button key={lang.key} onClick={() => saveSettings({ ...settings, language: lang.key })}
+                    style={{
+                      background: settings.language === lang.key ? "#4f8ef7" : "#2a2d38",
+                      color: settings.language === lang.key ? "#fff" : "#7a8099",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "8px 16px",
+                      fontSize: 13,
+                      cursor: "pointer",
+                    }}>
+                    {lang.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
