@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from pathlib import Path as PathLib
+
 from sci_paper_automation.agents.format_checker import FormatChecker
 from sci_paper_automation.agents.integrity import AcademicRiskScreening
 from sci_paper_automation.agents.journal import JournalMatcher
@@ -79,11 +81,61 @@ def run_pipeline(config_path: str) -> dict:
     journal = JournalMatcher(llm, prompt_dir)
     integrity = AcademicRiskScreening(llm, prompt_dir)
 
+    # Fetch from multiple sources
     state.status = 'fetching_literature'
-    state.literature_results = literature.fetch_semantic_scholar(state.topic, limit=5)
-
-    paper_text = load_text_if_exists(state.paper_path)
-    state.abstract = paper_text[:1200] if paper_text else f'Topic summary placeholder: {state.topic}'
+    all_results = []
+    sources = config.get('sources', {})
+    limit = config.get('max_results', 10)
+    topic = state.topic
+    
+    # Fetch from enabled sources
+    if sources.get('semantic_scholar', False):
+        print("Fetching from Semantic Scholar...")
+        all_results.extend(literature.fetch_semantic_scholar(topic, limit=limit))
+    
+    if sources.get('pubmed', False):
+        print("Fetching from PubMed...")
+        all_results.extend(literature.fetch_pubmed(topic, limit=limit))
+    
+    if sources.get('openalex', False):
+        print("Fetching from OpenAlex...")
+        all_results.extend(literature.fetch_openalex(topic, limit=limit))
+    
+    if sources.get('arxiv', False):
+        print("Fetching from arXiv...")
+        all_results.extend(literature.fetch_arxiv(topic, limit=limit))
+    
+    state.literature_results = all_results[:limit * 2]  # Allow some duplicates
+    
+    # Try to read paper from Box path
+    paper_text = ''
+    paper_path = config.get('paper_path', '')
+    
+    if paper_path:
+        # Try relative to config, or absolute
+        p = Path(paper_path)
+        if not p.exists():
+            # Try as absolute path
+            p = Path(cfg_path.parent.parent / paper_path)
+        if p.exists():
+            if p.suffix.lower() == '.docx':
+                # For docx, just note that it's available
+                paper_text = f"[論文檔案: {p.name}]"
+            else:
+                paper_text = p.read_text(encoding='utf-8', errors='ignore')[:5000]
+    
+    # Also check for papers in configured folder
+    paper_folder = config.get('paper_folder', '')
+    if paper_folder:
+        folder = Path(cfg_path.parent.parent / paper_folder)
+        if folder.exists():
+            # Look for markdown or text files
+            for ext in ['*.md', '*.txt']:
+                for f in sorted(folder.glob(ext))[:3]:
+                    paper_text += f"\n\n--- {f.name} ---\n"
+                    paper_text += f.read_text(encoding='utf-8', errors='ignore')[:2000]
+    
+    state.abstract = paper_text[:2000] if paper_text else f'Topic: {state.topic}'
 
     state.status = 'revising_abstract'
     revised_abstract = revision.enhance_abstract(state.abstract, state.keywords)
@@ -95,7 +147,7 @@ def run_pipeline(config_path: str) -> dict:
     state.status = 'integrity_screening'
     state.integrity_report = integrity.review(paper_text or state.abstract or '')
 
-    paper_docx = Path(state.paper_path)
+    paper_docx = Path(paper_path)
     if paper_docx.exists() and paper_docx.suffix.lower() == '.docx':
         state.status = 'format_checking'
         state.format_report = checker.check_docx(str(paper_docx))

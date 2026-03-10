@@ -1,0 +1,28 @@
+{
+  "project_id": "box-ieq-paper",
+  "topic": "Indoor environmental quality smart ventilation",
+  "paper_path": "/Users/pc/Library/CloudStorage/Box-Box/論文修正版_v5_revised.docx",
+  "paper_folder": "/Users/pc/Library/CloudStorage/Box-Box/01_學術研究/能源與建築論文",
+  "target_journal": "Building and Environment",
+  "keywords": [
+    "indoor environmental quality",
+    "smart ventilation",
+    "IEQ",
+    "building performance"
+  ],
+  "llm": {
+    "provider": "minimax",
+    "model": "MiniMax-M2.5",
+    "base_url": "https://api.minimax.chat/v1"
+  },
+  "sources": {
+    "semantic_scholar": true,
+    "pubmed": true,
+    "openalex": true,
+    "arxiv": true
+  },
+  "max_results": 10,
+  "outputs": {
+    "root_dir": "./output/box-ieq-paper"
+  }
+}
