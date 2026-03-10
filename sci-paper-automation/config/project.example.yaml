@@ -1,0 +1,19 @@
+project_id: demo-sci-paper
+topic: Indoor environmental quality and smart ventilation
+paper_path: ./sample_paper.docx
+target_journal: Building and Environment
+keywords:
+  - indoor environmental quality
+  - smart ventilation
+  - sustainability
+  - building performance
+llm:
+  provider: mock
+  model: mock-sonnet
+sources:
+  semantic_scholar: true
+  pubmed: true
+  openalex: true
+  arxiv: true
+outputs:
+  root_dir: ./output/demo-sci-paper
