@@ -21,6 +21,12 @@
     "openalex": true,
     "arxiv": true
   },
+  "video_sources": {
+    "youtube": true,
+    "bilibili": true,
+    "style": "academic",
+    "urls": []
+  },
   "max_results": 10,
   "outputs": {
     "root_dir": "./output/box-ieq-paper"

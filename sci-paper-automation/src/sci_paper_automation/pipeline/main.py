@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from pathlib import Path as PathLib
@@ -11,6 +12,7 @@ from sci_paper_automation.agents.integrity import AcademicRiskScreening
 from sci_paper_automation.agents.journal import JournalMatcher
 from sci_paper_automation.agents.literature import LiteratureFetcher
 from sci_paper_automation.agents.revision import PaperRevisionAgent
+from sci_paper_automation.agents.video_knowledge import VideoKnowledgeExtractor
 from sci_paper_automation.clients.llm import ClaudeLLMClient, MiniMaxLLMClient, MockLLMClient
 from sci_paper_automation.models.state import PaperState
 
@@ -144,6 +146,38 @@ def run_pipeline(config_path: str) -> dict:
         all_results.extend(literature.fetch_arxiv(topic, limit=limit))
     
     state.literature_results = all_results[:limit * 2]  # Allow some duplicates
+    
+    # Video knowledge extraction
+    video_sources = config.get('video_sources', {})
+    video_results = []
+    if video_sources.get('youtube') or video_sources.get('bilibili'):
+        video_urls = video_sources.get('urls', [])
+        video_style = video_sources.get('style', 'academic')
+        video_api_key = config.get('llm', {}).get('api_key') or os.getenv('MINIMAX_API_KEY')
+        
+        if video_urls:
+            print("Extracting video knowledge...")
+            video_extractor = VideoKnowledgeExtractor(
+                api_key=video_api_key,
+                provider=config.get('llm', {}).get('provider', 'minimax')
+            )
+            
+            for video_url in video_urls:
+                print(f"  Processing: {video_url}")
+                try:
+                    result = video_extractor.process_video(
+                        video_url, 
+                        style=video_style,
+                        summary=True
+                    )
+                    video_results.append({
+                        'url': video_url,
+                        'result': result
+                    })
+                except Exception as e:
+                    print(f"  Error processing {video_url}: {e}")
+    
+    state.charts = video_results  # Store video results in charts field for now
     
     # Try to read paper from Box path
     paper_text = ''

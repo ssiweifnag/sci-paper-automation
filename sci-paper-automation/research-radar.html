@@ -202,6 +202,43 @@ async function analyzeArticle(article, settings, apiKey) {
   return callMiniMax(apiKey, systemPrompt, userPrompt, 800);
 }
 
+
+// ============ Video Knowledge Extraction (YouTube/Bilibili) ===============
+// 影片知識提取 - 需要後端 kd CLI 或直接調用
+
+async function extractVideoKnowledge(url, apiKey, style = "academic") {
+  // 這個需要後端支援，因為 yt-dlp 需要在 server 端執行
+  // 這裡提供一個調用範式，實際需要透過 MCP 或 CLI
+  
+  // 方式 1：透過後端 API
+  // return fetch('/api/video-knowledge', {
+  //   method: 'POST',
+  //   headers: { 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({ url, apiKey, style })
+  // }).then(r => r.json())
+  
+  // 方式 2：直接返回指示（讓用戶知道需要 CLI）
+  return {
+    url,
+    style,
+    note: "影片知識提取需要 kd CLI。請在終端執行：kd process {url} --style {style}",
+    requiresCLI: true
+  };
+}
+
+// 取得可用風格
+const VIDEO_STYLES = [
+  { key: "standard", label: "標準摘要", desc: "一般影片" },
+  { key: "academic", label: "學術筆記", desc: "演講、論文討論" },
+  { key: "actions", label: "行動清單", desc: "教學、How-to" },
+  { key: "news", label: "新聞速報", desc: "時事、訪談" },
+  { key: "investment", label: "投資分析", desc: "財經、投資" },
+  { key: "podcast", label: "播客速覽", desc: "對話、播客" },
+  { key: "eli5", label: "小學生都明", desc: "科技、科學" },
+  { key: "bullets", label: "子彈筆記", desc: "快速瀏覽" },
+];
+
+
 // ============ UI Components ===============
 
 function Badge({ label, color = "#4f8ef7" }) {
@@ -321,6 +358,9 @@ export default function ResearchRadar() {
   const [newKeyword, setNewKeyword] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoStyle, setVideoStyle] = useState("academic");
+  const [videoResults, setVideoResults] = useState([]);
 
   // Load from localStorage
   useEffect(() => {
@@ -434,6 +474,7 @@ export default function ResearchRadar() {
   const tabs = [
     { id: "dashboard", label: "📋 儀表板" },
     { id: "articles", label: "📄 文章" },
+    { id: "videos", label: "🎬 影片" },
     { id: "report", label: "📊 報告" },
     { id: "kb", label: "🗃 知識庫" },
     { id: "settings", label: "⚙️ 設定" },
@@ -657,6 +698,101 @@ export default function ResearchRadar() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* VIDEOS */}
+        {tab === "videos" && (
+          <div>
+            <div style={{ background: "#13151c", border: "1px solid #2a2d38", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+              <div style={{ color: "#e0e4f0", fontWeight: 700, marginBottom: 14 }}>
+                🎬 影片知識提取
+              </div>
+              <div style={{ color: "#7a8099", fontSize: 12, marginBottom: 16 }}>
+                輸入 YouTube 或 Bilibili 影片網址，轉化為結構化知識文章
+              </div>
+              
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ color: "#7a8099", fontSize: 12, marginBottom: 6 }}>影片網址</div>
+                <input 
+                  value={videoUrl} 
+                  onChange={e => setVideoUrl(e.target.value)}
+                  placeholder="https://youtube.com/watch?v=... 或 https://bilibili.com/video/..."
+                  style={inputStyle}
+                />
+              </div>
+              
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ color: "#7a8099", fontSize: 12, marginBottom: 6 }}>摘要風格</div>
+                <select 
+                  value={videoStyle}
+                  onChange={e => setVideoStyle(e.target.value)}
+                  style={{ ...inputStyle, cursor: "pointer" }}
+                >
+                  {VIDEO_STYLES.map(s => (
+                    <option key={s.key} value={s.key}>{s.label} - {s.desc}</option>
+                  ))}
+                </select>
+              </div>
+              
+              <button 
+                onClick={async () => {
+                  if (!videoUrl) {
+                    alert("請輸入影片網址");
+                    return;
+                  }
+                  if (!settings.apiKey) {
+                    alert("請先在設定中輸入 API Key");
+                    return;
+                  }
+                  
+                  setLoading(true);
+                  setStatus("🤖 分析影片中...");
+                  
+                  // 這裡調用 AI 分析影片標題和描述（實際提取需要後端）
+                  try {
+                    const result = await extractVideoKnowledge(videoUrl, settings.apiKey, videoStyle);
+                    setVideoResults([...videoResults, { url: videoUrl, style: videoStyle, result }]);
+                    setStatus("✅ 完成！");
+                  } catch (e) {
+                    setStatus(`❌ 錯誤: ${e.message}`);
+                  }
+                  setLoading(false);
+                }}
+                disabled={loading || !videoUrl}
+                style={{ ...btnStyle("#e85d4a"), width: "100%" }}
+              >
+                {loading ? `⏳ ${status}` : "🎬 提取影片知識"}
+              </button>
+              
+              <div style={{ color: "#4a5068", fontSize: 11, marginTop: 12 }}>
+                💡 需要 kd CLI：在終端執行 <code style={{ background: "#2a2d38", padding: "2px 6px", borderRadius: 4 }}>kd process [URL] --style {videoStyle}</code>
+              </div>
+            </div>
+            
+            {videoResults.length > 0 && (
+              <div>
+                <div style={{ color: "#7a8099", fontSize: 13, marginBottom: 12 }}>
+                  已提取的影片 ({videoResults.length})
+                </div>
+                {videoResults.map((r, i) => (
+                  <div key={i} style={{
+                    background: "#13151c",
+                    border: "1px solid #2a2d38",
+                    borderRadius: 10,
+                    padding: 14,
+                    marginBottom: 10,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "#e85d4a", fontWeight: 600 }}>
+                        {r.url.slice(0, 50)}...
+                      </a>
+                      <Badge label={r.style} color="#e85d4a" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
