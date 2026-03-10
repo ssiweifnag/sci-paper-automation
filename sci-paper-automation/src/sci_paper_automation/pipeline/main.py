@@ -41,6 +41,44 @@ def load_text_if_exists(path: str) -> str:
     p = Path(path)
     if not p.exists():
         return ''
+    
+    suffix = p.suffix.lower()
+    if suffix == '.docx':
+        # Try python-docx first
+        try:
+            from docx import Document
+            doc = Document(path)
+            text_parts = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    text_parts.append(para.text.strip())
+            return '\n\n'.join(text_parts)
+        except ImportError:
+            pass
+        except Exception as e:
+            pass
+        
+        # Fallback: extract via zipfile (docx is just XML inside)
+        try:
+            import zipfile
+            text_parts = []
+            with zipfile.ZipFile(path, 'r') as z:
+                # Read document.xml which contains the main content
+                with z.open('word/document.xml') as f:
+                    import xml.etree.ElementTree as ET
+                    tree = ET.parse(f)
+                    root = tree.getroot()
+                    # Word uses namespaces, strip them for simpler parsing
+                    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                    for elem in root.iter():
+                        if elem.tag.endswith('}t'):  # Text element
+                            if elem.text:
+                                text_parts.append(elem.text)
+            return ''.join(text_parts)
+        except Exception as e:
+            return f"[DOCX: {p.name} - extract error: {e}]"
+    
+    # Plain text files
     return p.read_text(encoding='utf-8', errors='ignore')
 
 
