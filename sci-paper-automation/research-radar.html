@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
     arxiv: true,
     pubmed: true,
     semanticScholar: false,
+    openalex: false,
     hackernews: true,
   },
   language: "zh-TW",
@@ -203,6 +204,28 @@ async function analyzeArticle(article, settings, apiKey) {
 }
 
 
+
+
+// OpenAlex API
+const OPENALEX_API = "https://api.openalex.org/works";
+
+async function fetchOpenAlex(keyword, maxResults = 10) {
+  try {
+    const url = `${OPENALEX_API}?search=${encodeURIComponent(keyword)}&per-page=${maxResults}&select=id,title,abstract,publication_year,authorships,doi,cited_by_count`;
+    const res = await fetch(url);
+    const data = await res.json();
+    return (data.results || []).map(item => ({
+      title: item.title || "",
+      summary: item.abstract?.slice(0, 300) || "",
+      url: item.doi ? `https://doi.org/${item.doi}` : item.id?.replace("https://openalex.org/", ""),
+      source: "OpenAlex",
+      date: item.publication_year ? `${item.publication_year}-01-01` : "",
+      citations: item.cited_by_count || 0,
+    }));
+  } catch {
+    return [];
+  }
+}
 // ============ Video Knowledge Extraction (YouTube/Bilibili) ===============
 // 影片知識提取 - 需要後端 kd CLI 或直接調用
 
@@ -409,6 +432,11 @@ export default function ResearchRadar() {
       if (settings.sources.pubmed) {
         setStatus(`🏥 PubMed: ${kw}`);
         const res = await fetchPubMed(kw, settings.maxResults);
+        allArticles.push(...res);
+      }
+      if (settings.sources.openalex) {
+        setStatus(`📚 OpenAlex: ${kw}`);
+        const res = await fetchOpenAlex(kw, settings.maxResults);
         allArticles.push(...res);
       }
     }
@@ -875,6 +903,7 @@ export default function ResearchRadar() {
                 { key: "hackernews", label: "HackerNews（科技新聞）", desc: "矽谷技術社群熱門討論", color: "#ff6600" },
                 { key: "semanticScholar", label: "Semantic Scholar（學術搜尋）", desc: "AI 驅動的學術論文搜尋引擎", color: "#4285f4" },
                 { key: "pubmed", label: "PubMed（生醫論文）", desc: "醫學與生命科學文獻資料庫", color: "#2e8b57" },
+                { key: "openalex", label: "OpenAlex（學術搜尋）", desc: "開放學術論文索引", color: "#6366f1" },
               ].map(s => (
                 <div key={s.key} style={{
                   display: "flex",
