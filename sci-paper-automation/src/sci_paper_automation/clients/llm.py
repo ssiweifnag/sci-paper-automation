@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -41,3 +42,40 @@ class ClaudeLLMClient:
             messages=[{'role': 'user', 'content': user}],
         )
         return response.content[0].text
+
+
+@dataclass
+class MiniMaxLLMClient:
+    api_key: str
+    model: str = 'MiniMax-M2.5'
+    base_url: str = 'https://api.minimax.chat/v1'
+
+    def __post_init__(self) -> None:
+        try:
+            import requests
+        except ImportError as exc:
+            raise RuntimeError('requests 套件未安裝，請先 pip install requests') from exc
+        self._session = requests.Session()
+        self._session.headers.update({
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+        })
+
+    def generate(self, *, system: str, user: str, max_tokens: int = 2000) -> str:
+        url = f'{self.base_url}/text/chatcompletion_v2'
+        payload = {
+            'model': self.model,
+            'messages': [
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': user},
+            ],
+            'max_tokens': max_tokens,
+        }
+        resp = self._session.post(url, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # MiniMax response format: data.choices[0].message.content
+        try:
+            return data['choices'][0]['message']['content']
+        except (KeyError, IndexError) as e:
+            raise RuntimeError(f'MiniMax API 回應格式異常: {data}') from e

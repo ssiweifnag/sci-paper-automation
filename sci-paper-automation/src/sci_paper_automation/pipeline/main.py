@@ -9,7 +9,7 @@ from sci_paper_automation.agents.integrity import AcademicRiskScreening
 from sci_paper_automation.agents.journal import JournalMatcher
 from sci_paper_automation.agents.literature import LiteratureFetcher
 from sci_paper_automation.agents.revision import PaperRevisionAgent
-from sci_paper_automation.clients.llm import ClaudeLLMClient, MockLLMClient
+from sci_paper_automation.clients.llm import ClaudeLLMClient, MiniMaxLLMClient, MockLLMClient
 from sci_paper_automation.models.state import PaperState
 
 
@@ -22,6 +22,16 @@ def build_llm(config: dict):
         if not api_key:
             raise RuntimeError('使用 claude provider 時需設定 ANTHROPIC_API_KEY')
         return ClaudeLLMClient(api_key=api_key, model=llm_cfg.get('model', 'claude-sonnet-4-20250514'))
+    if provider == 'minimax':
+        import os
+        api_key = os.getenv('MINIMAX_API_KEY')
+        if not api_key:
+            raise RuntimeError('使用 minimax provider 時需設定 MINIMAX_API_KEY')
+        return MiniMaxLLMClient(
+            api_key=api_key,
+            model=llm_cfg.get('model', 'MiniMax-M2.5'),
+            base_url=llm_cfg.get('base_url', 'https://api.minimax.chat/v1'),
+        )
     return MockLLMClient(model=llm_cfg.get('model', 'mock-sonnet'))
 
 
